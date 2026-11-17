@@ -1,0 +1,303 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email.lower() == 'seetha.easwari@bhumi.ngo';
+    }
+
+    function isStaff() {
+      return isBootstrappedAdmin() || (
+        isVerified() &&
+        request.auth.token.email is string &&
+        exists(/databases/$(database)/documents/staff_allowlist/$(request.auth.token.email.lower()))
+      );
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll([
+        'productId', 'name', 'qrCode', 'price', 'gstRate', 'available', 'category', 'unit', 'imagePath', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'productId', 'name', 'qrCode', 'price', 'gstRate', 'available', 'category', 'unit', 'imagePath', 'updatedAt'
+      ]) &&
+      data.productId is string && data.productId.size() >= 2 && data.productId.size() <= 32 &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+      data.qrCode is string && data.qrCode.size() >= 3 && data.qrCode.size() <= 64 &&
+      data.price is number && data.price > 0 && data.price <= 100000 &&
+      data.gstRate is number && data.gstRate >= 0 && data.gstRate <= 28 &&
+      data.available is bool &&
+      data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+      data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30 &&
+      data.imagePath is string && data.imagePath.size() <= 200 &&
+      data.updatedAt == request.time;
+    }
+
+    function isValidTrolley(data) {
+      return data.keys().hasAll([
+        'trolleyId', 'label', 'status', 'activeSessionId', 'activeCustomerId', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'trolleyId', 'label', 'status', 'activeSessionId', 'activeCustomerId', 'updatedAt'
+      ]) &&
+      data.trolleyId is string && data.trolleyId.matches('^T[0-9]{3,}$') && data.trolleyId.size() <= 16 &&
+      data.label is string && data.label.size() >= 1 && data.label.size() <= 60 &&
+      data.status in ['AVAILABLE', 'IN_USE'] &&
+      (data.activeSessionId == null || (data.activeSessionId is string && data.activeSessionId.size() >= 1 && data.activeSessionId.size() <= 32)) &&
+      (data.activeCustomerId == null || (data.activeCustomerId is string && data.activeCustomerId.size() >= 1 && data.activeCustomerId.size() <= 32)) &&
+      data.updatedAt == request.time;
+    }
+
+    function isValidSession(data) {
+      return data.keys().hasAll([
+        'customerId', 'trolleyId', 'status', 'paymentStatus',
+        'subtotal', 'gstTotal', 'grandTotal', 'itemCount',
+        'customerToken', 'physicalVerified', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'customerId', 'trolleyId', 'status', 'paymentStatus',
+        'subtotal', 'gstTotal', 'grandTotal', 'itemCount',
+        'customerToken', 'physicalVerified', 'createdAt', 'updatedAt',
+        'paidAt', 'closedAt', 'verifiedByUid', 'verifiedByLabel'
+      ]) &&
+      data.customerId is string && data.customerId.matches('^CUST[0-9]{3,}$') && data.customerId.size() <= 20 &&
+      data.trolleyId is string && data.trolleyId.matches('^T[0-9]{3,}$') && data.trolleyId.size() <= 16 &&
+      data.status in ['ACTIVE', 'CHECKOUT_READY', 'PAID', 'CLOSED'] &&
+      data.paymentStatus in ['UNPAID', 'PAID'] &&
+      data.subtotal is number && data.subtotal >= 0 && data.subtotal <= 10000000 &&
+      data.gstTotal is number && data.gstTotal >= 0 && data.gstTotal <= 5000000 &&
+      data.grandTotal is number && data.grandTotal >= 0 && data.grandTotal <= 15000000 &&
+      data.itemCount is int && data.itemCount >= 0 && data.itemCount <= 500 &&
+      data.customerToken is string && data.customerToken.size() >= 12 && data.customerToken.size() <= 64 &&
+      data.physicalVerified is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt == request.time;
+    }
+
+    function isValidSessionItem(data, sessionId) {
+      return data.keys().hasAll([
+        'sessionId', 'productId', 'qrCode', 'name', 'unit',
+        'unitPrice', 'gstRate', 'quantity', 'lineSubtotal', 'lineGst', 'lineTotal', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'sessionId', 'productId', 'qrCode', 'name', 'unit',
+        'unitPrice', 'gstRate', 'quantity', 'lineSubtotal', 'lineGst', 'lineTotal', 'updatedAt'
+      ]) &&
+      data.sessionId == sessionId &&
+      data.productId is string && data.productId.size() >= 2 && data.productId.size() <= 32 &&
+      data.qrCode is string && data.qrCode.size() >= 3 && data.qrCode.size() <= 64 &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+      data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30 &&
+      data.unitPrice is number && data.unitPrice > 0 && data.unitPrice <= 100000 &&
+      data.gstRate is number && data.gstRate >= 0 && data.gstRate <= 28 &&
+      data.quantity is int && data.quantity >= 1 && data.quantity <= 200 &&
+      data.lineSubtotal is number && data.lineSubtotal >= 0 && data.lineSubtotal <= 10000000 &&
+      data.lineGst is number && data.lineGst >= 0 && data.lineGst <= 5000000 &&
+      data.lineTotal is number && data.lineTotal >= 0 && data.lineTotal <= 15000000 &&
+      data.updatedAt == request.time;
+    }
+
+    // Connection check document
+    match /test/connection {
+      allow get: if request.time != null;
+    }
+
+    // Product catalog
+    match /products/{productId} {
+      allow get: if isValidId(productId);
+      allow list: if request.time != null;
+      allow create: if isValidId(productId) &&
+        incoming().productId == productId &&
+        isValidProduct(incoming()) &&
+        (isStaff() || (productId.matches('^PROD00[1-6]$') && !exists(/databases/$(database)/documents/products/$(productId))));
+      allow update: if isStaff() && isValidId(productId) && incoming().productId == existing().productId && isValidProduct(incoming());
+      allow delete: if isStaff() && isValidId(productId);
+    }
+
+    // Permanent supermarket trolleys (T001, T002, T003...)
+    match /trolleys/{trolleyId} {
+      allow get: if isValidId(trolleyId);
+      allow list: if request.time != null;
+      allow create: if isValidId(trolleyId) &&
+        incoming().trolleyId == trolleyId &&
+        isValidTrolley(incoming()) &&
+        incoming().status == 'AVAILABLE' &&
+        incoming().activeSessionId == null &&
+        incoming().activeCustomerId == null &&
+        (isStaff() || (trolleyId.matches('^T00[1-5]$') && !exists(/databases/$(database)/documents/trolleys/$(trolleyId))));
+      allow update: if isValidId(trolleyId) &&
+        isValidTrolley(incoming()) &&
+        incoming().trolleyId == existing().trolleyId &&
+        incoming().label == existing().label &&
+        (
+          (isStaff() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'activeSessionId', 'activeCustomerId', 'updatedAt'])) ||
+          (
+            existing().status == 'AVAILABLE' &&
+            existing().activeSessionId == null &&
+            incoming().status == 'IN_USE' &&
+            incoming().activeSessionId is string &&
+            incoming().activeSessionId.matches('^CUST[0-9]{3,}$') &&
+            incoming().activeCustomerId == incoming().activeSessionId &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'activeSessionId', 'activeCustomerId', 'updatedAt']) &&
+            existsAfter(/databases/$(database)/documents/sessions/$(incoming().activeSessionId)) &&
+            getAfter(/databases/$(database)/documents/sessions/$(incoming().activeSessionId)).data.trolleyId == trolleyId
+          )
+        );
+      allow delete: if false;
+    }
+
+    // Sequential customer ID generator
+    match /counters/{counterId} {
+      allow get: if counterId == 'customerSeq';
+      allow list: if false;
+      allow create: if counterId == 'customerSeq' &&
+        incoming().keys().hasAll(['lastNumber', 'updatedAt']) &&
+        incoming().keys().hasOnly(['lastNumber', 'updatedAt']) &&
+        incoming().lastNumber is int &&
+        incoming().lastNumber >= 0 &&
+        incoming().lastNumber <= 1 &&
+        incoming().updatedAt == request.time;
+      allow update: if counterId == 'customerSeq' &&
+        incoming().keys().hasAll(['lastNumber', 'updatedAt']) &&
+        incoming().keys().hasOnly(['lastNumber', 'updatedAt']) &&
+        incoming().lastNumber is int &&
+        incoming().lastNumber == existing().lastNumber + 1 &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['lastNumber', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Customer shopping sessions & permanent bill archive
+    match /sessions/{sessionId} {
+      allow get: if isValidId(sessionId);
+      allow list: if isStaff();
+      allow create: if isValidId(sessionId) &&
+        sessionId == incoming().customerId &&
+        isValidSession(incoming()) &&
+        incoming().status == 'ACTIVE' &&
+        incoming().paymentStatus == 'UNPAID' &&
+        incoming().subtotal == 0 &&
+        incoming().gstTotal == 0 &&
+        incoming().grandTotal == 0 &&
+        incoming().itemCount == 0 &&
+        incoming().physicalVerified == false &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/trolleys/$(incoming().trolleyId)) &&
+        get(/databases/$(database)/documents/trolleys/$(incoming().trolleyId)).data.status == 'AVAILABLE' &&
+        getAfter(/databases/$(database)/documents/trolleys/$(incoming().trolleyId)).data.activeSessionId == sessionId &&
+        getAfter(/databases/$(database)/documents/trolleys/$(incoming().trolleyId)).data.status == 'IN_USE';
+
+      allow update: if isValidId(sessionId) &&
+        isValidSession(incoming()) &&
+        incoming().customerId == existing().customerId &&
+        incoming().trolleyId == existing().trolleyId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().customerToken == existing().customerToken &&
+        (
+          (
+            existing().status in ['ACTIVE', 'CHECKOUT_READY'] &&
+            existing().paymentStatus == 'UNPAID' &&
+            incoming().status in ['ACTIVE', 'CHECKOUT_READY'] &&
+            incoming().paymentStatus == 'UNPAID' &&
+            incoming().physicalVerified == existing().physicalVerified &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'subtotal', 'gstTotal', 'grandTotal', 'itemCount', 'updatedAt'])
+          ) ||
+          (
+            isStaff() &&
+            existing().status != 'CLOSED' &&
+            (
+              (
+                incoming().status == 'PAID' &&
+                incoming().paymentStatus == 'PAID' &&
+                incoming().physicalVerified == true &&
+                incoming().paidAt == request.time &&
+                incoming().verifiedByUid == request.auth.uid &&
+                incoming().verifiedByLabel is string &&
+                incoming().verifiedByLabel.size() >= 1 &&
+                incoming().verifiedByLabel.size() <= 80 &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'status', 'paymentStatus', 'physicalVerified', 'paidAt', 'verifiedByUid', 'verifiedByLabel', 'updatedAt'
+                ])
+              ) ||
+              (
+                existing().paymentStatus == 'PAID' &&
+                incoming().status == 'CLOSED' &&
+                incoming().paymentStatus == 'PAID' &&
+                incoming().physicalVerified == true &&
+                incoming().closedAt == request.time &&
+                getAfter(/databases/$(database)/documents/trolleys/$(existing().trolleyId)).data.status == 'AVAILABLE' &&
+                getAfter(/databases/$(database)/documents/trolleys/$(existing().trolleyId)).data.activeSessionId == null &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'closedAt', 'updatedAt'])
+              )
+            )
+          )
+        );
+      allow delete: if false;
+
+      match /items/{itemId} {
+        allow get: if isValidId(sessionId) && isValidId(itemId);
+        allow list: if resource.data.sessionId == sessionId;
+        allow create: if isValidId(sessionId) &&
+          isValidId(itemId) &&
+          itemId == incoming().productId &&
+          isValidSessionItem(incoming(), sessionId) &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.status in ['ACTIVE', 'CHECKOUT_READY'] &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.paymentStatus == 'UNPAID';
+        allow update: if isValidId(sessionId) &&
+          isValidId(itemId) &&
+          itemId == incoming().productId &&
+          incoming().sessionId == existing().sessionId &&
+          incoming().productId == existing().productId &&
+          isValidSessionItem(incoming(), sessionId) &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.status in ['ACTIVE', 'CHECKOUT_READY'] &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.paymentStatus == 'UNPAID';
+        allow delete: if isValidId(sessionId) &&
+          isValidId(itemId) &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.status in ['ACTIVE', 'CHECKOUT_READY'] &&
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.paymentStatus == 'UNPAID';
+      }
+    }
+
+    // Staff allowlist managed by bootstrapped supermarket admin
+    match /staff_allowlist/{email} {
+      allow get: if isVerified() && (request.auth.token.email.lower() == email || isBootstrappedAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create, update: if isBootstrappedAdmin() &&
+        incoming().keys().hasAll(['email', 'role', 'addedBy', 'createdAt']) &&
+        incoming().keys().hasOnly(['email', 'role', 'addedBy', 'createdAt']) &&
+        incoming().email == email &&
+        incoming().email is string &&
+        incoming().email.size() >= 3 &&
+        incoming().email.size() <= 120 &&
+        incoming().role == 'STAFF' &&
+        incoming().addedBy.lower() == request.auth.token.email.lower() &&
+        incoming().createdAt == request.time;
+      allow delete: if isBootstrappedAdmin() && email != 'seetha.easwari@bhumi.ngo';
+    }
+  }
+}

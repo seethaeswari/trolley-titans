@@ -1,0 +1,6 @@
+{
+  "name": "Trolley Titans",
+  "description": "Smart QR-Based Shopping Trolley and Queue-Free Supermarket Checkout System",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}

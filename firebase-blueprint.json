@@ -1,0 +1,154 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "A physical supermarket shelf product with configurable GST rate and QR code.",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "qrCode": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "price": { "type": "number" },
+        "gstRate": { "type": "number" },
+        "available": { "type": "boolean" },
+        "category": { "type": "string", "minLength": 1, "maxLength": 50 },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "imagePath": { "type": "string", "maxLength": 200 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["productId", "name", "qrCode", "price", "gstRate", "available", "category", "unit", "imagePath", "updatedAt"]
+    },
+    "Trolley": {
+      "title": "Trolley",
+      "description": "A physical supermarket trolley with a permanent QR code (e.g., T001, T002, T003).",
+      "type": "object",
+      "properties": {
+        "trolleyId": { "type": "string", "minLength": 2, "maxLength": 16, "pattern": "^T[0-9]{3,}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "status": { "type": "string", "enum": ["AVAILABLE", "IN_USE"] },
+        "activeSessionId": { "type": "string", "maxLength": 32 },
+        "activeCustomerId": { "type": "string", "maxLength": 32 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["trolleyId", "label", "status", "activeSessionId", "activeCustomerId", "updatedAt"]
+    },
+    "Counter": {
+      "title": "Counter",
+      "description": "Atomic sequence counter for generating sequential Customer IDs (CUST001, CUST002, ...).",
+      "type": "object",
+      "properties": {
+        "lastNumber": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["lastNumber", "updatedAt"]
+    },
+    "ShoppingSession": {
+      "title": "ShoppingSession",
+      "description": "An isolated customer shopping and billing session linked to a physical trolley.",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string", "minLength": 7, "maxLength": 20, "pattern": "^CUST[0-9]{3,}$" },
+        "trolleyId": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^T[0-9]{3,}$" },
+        "status": { "type": "string", "enum": ["ACTIVE", "CHECKOUT_READY", "PAID", "CLOSED"] },
+        "paymentStatus": { "type": "string", "enum": ["UNPAID", "PAID"] },
+        "subtotal": { "type": "number" },
+        "gstTotal": { "type": "number" },
+        "grandTotal": { "type": "number" },
+        "itemCount": { "type": "integer" },
+        "customerToken": { "type": "string", "minLength": 12, "maxLength": 64 },
+        "physicalVerified": { "type": "boolean" },
+        "verifiedByUid": { "type": "string", "maxLength": 128 },
+        "verifiedByLabel": { "type": "string", "maxLength": 80 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "paidAt": { "type": "string", "format": "date-time" },
+        "closedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "customerId",
+        "trolleyId",
+        "status",
+        "paymentStatus",
+        "subtotal",
+        "gstTotal",
+        "grandTotal",
+        "itemCount",
+        "customerToken",
+        "physicalVerified",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SessionItem": {
+      "title": "SessionItem",
+      "description": "A line item inside a customer's shopping session cart with product-specific GST.",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string", "minLength": 7, "maxLength": 20, "pattern": "^CUST[0-9]{3,}$" },
+        "productId": { "type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "qrCode": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "unitPrice": { "type": "number" },
+        "gstRate": { "type": "number" },
+        "quantity": { "type": "integer" },
+        "lineSubtotal": { "type": "number" },
+        "lineGst": { "type": "number" },
+        "lineTotal": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "sessionId",
+        "productId",
+        "qrCode",
+        "name",
+        "unit",
+        "unitPrice",
+        "gstRate",
+        "quantity",
+        "lineSubtotal",
+        "lineGst",
+        "lineTotal",
+        "updatedAt"
+      ]
+    },
+    "StaffAllowlistEntry": {
+      "title": "StaffAllowlistEntry",
+      "description": "Authorized supermarket billing counter staff account allowlisted by email.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["STAFF"] },
+        "addedBy": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "role", "addedBy", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Supermarket product catalog with QR code values and product-specific GST rates."
+    },
+    "/trolleys/{trolleyId}": {
+      "schema": { "$ref": "#/entities/Trolley" },
+      "description": "Permanent physical trolleys (T001, T002, T003) and their active session lock state."
+    },
+    "/counters/{counterId}": {
+      "schema": { "$ref": "#/entities/Counter" },
+      "description": "Sequential Customer ID generator counter."
+    },
+    "/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/ShoppingSession" },
+      "description": "Customer shopping sessions and permanent billing history."
+    },
+    "/sessions/{sessionId}/items/{itemId}": {
+      "schema": { "$ref": "#/entities/SessionItem" },
+      "description": "Cart line items belonging to a specific customer shopping session."
+    },
+    "/staff_allowlist/{email}": {
+      "schema": { "$ref": "#/entities/StaffAllowlistEntry" },
+      "description": "Authorized staff emails permitted to verify payments and close trolley sessions."
+    }
+  }
+}
