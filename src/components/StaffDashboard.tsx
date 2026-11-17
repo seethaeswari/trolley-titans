@@ -56,6 +56,13 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
   const [activeTab, setActiveTab] = useState<StaffTab>('counter');
   const [sessions, setSessions] = useState<ShoppingSession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [scannedSessionFallback, setScannedSessionFallback] = useState<ShoppingSession | null>(null);
+  const [scannedQrMeta, setScannedQrMeta] = useState<{
+    customerId: string;
+    trolleyId: string;
+    invoiceRef: string;
+    scannedAt: string;
+  } | null>(null);
   const [selectedItems, setSelectedItems] = useState<SessionItem[]>([]);
   const [checkedProducts, setCheckedProducts] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState('');
@@ -122,6 +129,8 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
       return;
     }
 
+    // Clear previous customer's items and checklist immediately when switching customers
+    setSelectedItems([]);
     setCheckedProducts({});
     setConfirmEmptyCloseId(null);
     const q = query(
@@ -213,10 +222,12 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
     );
   }, [closedSessions, searchQuery]);
 
-  const selectedSession = useMemo(
-    () => sessions.find((s) => s.customerId === selectedSessionId) || null,
-    [sessions, selectedSessionId]
-  );
+  const selectedSession = useMemo(() => {
+    const live = sessions.find((s) => s.customerId === selectedSessionId);
+    if (live) return live;
+    if (scannedSessionFallback?.customerId === selectedSessionId) return scannedSessionFallback;
+    return null;
+  }, [sessions, selectedSessionId, scannedSessionFallback]);
 
   const totalRevenue = useMemo(
     () =>
@@ -264,50 +275,99 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
     setSelectedSessionId(null);
   };
 
-  const handleScanCheckoutQr = async (decoded: string) => {
+  const handleScanCheckoutQr = async (
+    decoded: string,
+    source: 'camera' | 'image' | 'manual' = 'camera'
+  ) => {
     setActionNotice(null);
     const parsed = parseCheckoutQr(decoded);
-    if (!parsed.customerId) {
+    if (parsed.lookupMode === 'invalid' || parsed.error) {
       setActionNotice({
         type: 'error',
-        message: 'Could not read a valid Customer ID from that QR code or input.',
+        message:
+          parsed.error || 'Could not read a valid Customer Checkout QR code or lookup ID.',
       });
       return;
     }
 
-    let found = sessions.find(
-      (s) => s.customerId.toUpperCase() === parsed.customerId.toUpperCase()
-    );
-    if (!found) {
+    let targetCustomerId = parsed.customerId;
+    let expectedTrolleyId = parsed.trolleyId;
+
+    // Resolve Trolley Number (e.g. T001) to its active customer session when entered manually or from trolley lookup
+    if (parsed.lookupMode === 'trolley_id' && parsed.trolleyId) {
+      if (source === 'camera' || source === 'image') {
+        setActionNotice({
+          type: 'error',
+          message: `Scanned a Trolley ID (${parsed.trolleyId}), not a Customer Checkout QR. Scan the Checkout QR on the customer's phone or type ${parsed.trolleyId} in the manual lookup input.`,
+        });
+        return;
+      }
+
       try {
-        const snap = await getDoc(doc(db, 'sessions', parsed.customerId.toUpperCase()));
-        if (snap.exists()) {
-          found = snap.data() as ShoppingSession;
+        const trolleySnap = await getDoc(doc(db, 'trolleys', parsed.trolleyId));
+        if (!trolleySnap.exists()) {
+          setActionNotice({
+            type: 'error',
+            message: `Trolley ${parsed.trolleyId} was not found in the store system.`,
+          });
+          return;
         }
+        const trolleyData = trolleySnap.data() as Trolley;
+        if (!trolleyData.activeSessionId) {
+          setActionNotice({
+            type: 'error',
+            message: `Trolley ${parsed.trolleyId} is currently ${trolleyData.status} with no active customer invoice.`,
+          });
+          return;
+        }
+        targetCustomerId = trolleyData.activeSessionId.toUpperCase();
+        expectedTrolleyId = trolleyData.trolleyId.toUpperCase();
       } catch (err) {
-        handleFirestoreError(err, OperationType.GET, `sessions/${parsed.customerId}`);
+        handleFirestoreError(err, OperationType.GET, `trolleys/${parsed.trolleyId}`);
+        return;
       }
     }
 
-    if (!found) {
+    if (!targetCustomerId || !/^CUST[0-9]{3,}$/.test(targetCustomerId)) {
       setActionNotice({
         type: 'error',
-        message: `Customer session ${parsed.customerId} was not found.`,
+        message: 'Could not extract a valid Customer ID from that Checkout QR.',
       });
       return;
     }
 
-    if (parsed.trolleyId && found.trolleyId.toUpperCase() !== parsed.trolleyId.toUpperCase()) {
+    // Always fetch the exact existing invoice directly from Firebase Firestore (read-only; never creates a duplicate)
+    let found: ShoppingSession | null = null;
+    try {
+      const snap = await getDoc(doc(db, 'sessions', targetCustomerId));
+      if (snap.exists()) {
+        found = snap.data() as ShoppingSession;
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, `sessions/${targetCustomerId}`);
+      return;
+    }
+
+    if (!found) {
       setActionNotice({
         type: 'error',
-        message: `Checkout QR mismatch: QR references ${parsed.trolleyId}, but ${found.customerId} belongs to ${found.trolleyId}.`,
+        message: `Customer invoice ${targetCustomerId} was not found in Firestore.`,
+      });
+      return;
+    }
+
+    if (expectedTrolleyId && found.trolleyId.toUpperCase() !== expectedTrolleyId.toUpperCase()) {
+      setActionNotice({
+        type: 'error',
+        message: `Checkout QR mismatch: QR references ${expectedTrolleyId}, but ${found.customerId} belongs to ${found.trolleyId}.`,
       });
       return;
     }
 
     if (
       parsed.sessionToken &&
-      !found.customerToken.toUpperCase().startsWith(parsed.sessionToken.toUpperCase())
+      (!found.customerToken ||
+        !found.customerToken.toUpperCase().startsWith(parsed.sessionToken.toUpperCase()))
     ) {
       setActionNotice({
         type: 'error',
@@ -316,18 +376,27 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
       return;
     }
 
+    const invoiceRef = parsed.invoiceRef || `INV-${found.customerId}`;
+    setScannedSessionFallback(found);
+    setScannedQrMeta({
+      customerId: found.customerId,
+      trolleyId: found.trolleyId,
+      invoiceRef,
+      scannedAt: new Date().toLocaleTimeString(),
+    });
     setSelectedSessionId(found.customerId);
+
     if (found.status === 'CLOSED') {
       setActiveTab('history');
       setActionNotice({
         type: 'success',
-        message: `Loaded archived bill ${found.customerId} (Trolley ${found.trolleyId} · CLOSED).`,
+        message: `Loaded archived invoice ${invoiceRef} · ${found.customerId} (Trolley ${found.trolleyId} · CLOSED).`,
       });
     } else {
       setActiveTab('counter');
       setActionNotice({
         type: 'success',
-        message: `Loaded ${found.customerId} on Trolley ${found.trolleyId} for physical verification.`,
+        message: `Loaded invoice ${invoiceRef} · ${found.customerId} (Trolley ${found.trolleyId} · ${found.itemCount} items · ${formatCurrency(found.grandTotal)}).`,
       });
     }
   };
@@ -705,8 +774,8 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
           <div className="lg:col-span-5 space-y-5">
             <QrScannerPanel
               title="Scan Customer Checkout QR"
-              subtitle="Scan the customer's Checkout QR using your laptop camera, or enter Customer ID (e.g., CUST001) and click Load Bill."
-              inputPlaceholder="Enter Customer ID (e.g., CUST001)"
+              subtitle="Scan the customer's Checkout QR using your laptop camera (or upload a QR screenshot), or enter Customer ID (e.g., CUST001) or Trolley Number (e.g., T001) and click Load Bill."
+              inputPlaceholder="Enter Customer ID (CUST001) or Trolley (T001)"
               submitLabel="Load Bill"
               onScan={handleScanCheckoutQr}
             />
@@ -787,7 +856,14 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
               <div className="space-y-6">
                 <div className="flex flex-wrap items-start justify-between gap-4 pb-4 border-b border-slate-200">
                   <div>
-                    <p className="text-xs text-slate-500">Customer Billing Verification</p>
+                    <p className="text-xs text-slate-500">
+                      Customer Billing Verification ·{' '}
+                      <span className="font-mono font-semibold text-slate-700">
+                        {scannedQrMeta?.customerId === selectedSession.customerId
+                          ? scannedQrMeta.invoiceRef
+                          : `INV-${selectedSession.customerId}`}
+                      </span>
+                    </p>
                     <h2 className="text-2xl font-mono font-bold text-slate-900 mt-0.5">
                       {selectedSession.customerId}
                       <span className="text-slate-300 mx-2 font-sans font-normal">·</span>

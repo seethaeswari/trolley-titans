@@ -151,38 +151,239 @@ export function parseTrolleyQr(rawInput: string): string {
   return trimmed.toUpperCase();
 }
 
-export function parseCheckoutQr(rawInput: string): {
+export interface ParsedCheckoutQr {
   customerId: string;
   trolleyId?: string;
   sessionToken?: string;
-} {
+  invoiceRef?: string;
+  lookupMode: 'checkout_qr' | 'customer_id' | 'trolley_id' | 'invalid';
+  error?: string;
+}
+
+const CUSTOMER_ID_RE = /^CUST[0-9]{3,}$/;
+const TROLLEY_ID_RE = /^T[0-9]{3,}$/;
+
+export function parseCheckoutQr(rawInput: string): ParsedCheckoutQr {
   const trimmed = rawInput.trim();
-  if (!trimmed) return { customerId: '' };
+  if (!trimmed) {
+    return {
+      customerId: '',
+      lookupMode: 'invalid',
+      error: 'Checkout QR code or lookup input is empty.',
+    };
+  }
+
+  // 1. Canonical Trolley Titans Checkout QR: TROLLEY_TITANS:CHECKOUT:CUST006:T001[:TOKEN[:INVOICE]]
+  if (trimmed.toUpperCase().startsWith('TROLLEY_TITANS:CHECKOUT:')) {
+    const parts = trimmed.split(':');
+    const customerId = (parts[2] || '').trim().toUpperCase();
+    const trolleyId = parts[3] ? parts[3].trim().toUpperCase() : undefined;
+    const sessionToken = parts[4] ? parts[4].trim().toUpperCase() : undefined;
+    const invoiceRef = parts[5] ? parts[5].trim().toUpperCase() : undefined;
+
+    if (!CUSTOMER_ID_RE.test(customerId)) {
+      return {
+        customerId: '',
+        lookupMode: 'invalid',
+        error: 'Invalid Checkout QR code: missing or malformed Customer ID.',
+      };
+    }
+    if (trolleyId && !TROLLEY_ID_RE.test(trolleyId)) {
+      return {
+        customerId: '',
+        lookupMode: 'invalid',
+        error: `Invalid Checkout QR code: malformed Trolley Number "${trolleyId}".`,
+      };
+    }
+
+    return {
+      customerId,
+      trolleyId,
+      sessionToken,
+      invoiceRef: invoiceRef || `INV-${customerId}`,
+      lookupMode: 'checkout_qr',
+    };
+  }
+
+  // 2. Reject permanent trolley tag or shelf product QR prefixes with clear guidance
+  if (trimmed.toUpperCase().startsWith('TT-PROD-')) {
+    return {
+      customerId: '',
+      lookupMode: 'invalid',
+      error: `Scanned "${trimmed}" is a Shelf Product QR code, not a Customer Checkout QR.`,
+    };
+  }
+  if (trimmed.toUpperCase().startsWith('TROLLEY_TITANS:TROLLEY:')) {
+    return {
+      customerId: '',
+      lookupMode: 'invalid',
+      error: 'Scanned QR is a permanent Trolley sticker, not a Customer Checkout QR.',
+    };
+  }
+
+  // 3. JSON Checkout QR payload
   if (trimmed.startsWith('{')) {
     try {
       const parsed = JSON.parse(trimmed) as {
+        type?: string;
+        productId?: string;
+        qrCode?: string;
         customerId?: string;
+        customer?: string;
         trolleyId?: string;
+        trolley?: string;
         sessionToken?: string;
+        customerToken?: string;
+        token?: string;
+        invoiceNumber?: string;
+        invoiceId?: string;
+        invoiceRef?: string;
       };
+
+      if (parsed.type?.toUpperCase() === 'PRODUCT' || ((parsed.productId || parsed.qrCode) && !parsed.customerId && !parsed.customer)) {
+        return {
+          customerId: '',
+          lookupMode: 'invalid',
+          error: 'Scanned JSON is a Product QR code, not a Customer Checkout QR.',
+        };
+      }
+
+      const customerId = (parsed.customerId || parsed.customer || '').trim().toUpperCase();
+      const trolleyId = (parsed.trolleyId || parsed.trolley || '').trim().toUpperCase() || undefined;
+      const sessionToken =
+        (parsed.sessionToken || parsed.customerToken || parsed.token || '').trim().toUpperCase() ||
+        undefined;
+      const invoiceRef =
+        (parsed.invoiceNumber || parsed.invoiceId || parsed.invoiceRef || '').trim().toUpperCase() ||
+        undefined;
+
+      if (CUSTOMER_ID_RE.test(customerId)) {
+        if (trolleyId && !TROLLEY_ID_RE.test(trolleyId)) {
+          return {
+            customerId: '',
+            lookupMode: 'invalid',
+            error: `Invalid Checkout QR code: malformed Trolley Number "${trolleyId}".`,
+          };
+        }
+        return {
+          customerId,
+          trolleyId,
+          sessionToken,
+          invoiceRef: invoiceRef || `INV-${customerId}`,
+          lookupMode: 'checkout_qr',
+        };
+      }
+
+      if (trolleyId && TROLLEY_ID_RE.test(trolleyId)) {
+        return {
+          customerId: '',
+          trolleyId,
+          sessionToken,
+          invoiceRef,
+          lookupMode: 'trolley_id',
+        };
+      }
+
       return {
-        customerId: (parsed.customerId || '').trim().toUpperCase(),
-        trolleyId: parsed.trolleyId ? parsed.trolleyId.trim().toUpperCase() : undefined,
-        sessionToken: parsed.sessionToken ? parsed.sessionToken.trim().toUpperCase() : undefined,
+        customerId: '',
+        lookupMode: 'invalid',
+        error: 'Invalid Checkout QR JSON payload: no valid Customer ID found.',
       };
     } catch {
-      // fall through
+      return {
+        customerId: '',
+        lookupMode: 'invalid',
+        error: 'Malformed JSON Checkout QR code.',
+      };
     }
   }
-  if (trimmed.toUpperCase().startsWith('TROLLEY_TITANS:CHECKOUT:')) {
-    const parts = trimmed.split(':');
+
+  // 4. URL-based QR code (supports ?customer=CUST001&trolley=T001 or rejects permanent ?trolley=T001 URLs)
+  if (/^https?:\/\//i.test(trimmed) || trimmed.includes('?') || trimmed.includes('/')) {
+    try {
+      const urlObj = /^https?:\/\//i.test(trimmed)
+        ? new URL(trimmed)
+        : new URL(trimmed, 'https://trolley-titans.local');
+      const customerParam = (
+        urlObj.searchParams.get('customer') ||
+        urlObj.searchParams.get('customerId') ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      const trolleyParam = (
+        urlObj.searchParams.get('trolley') ||
+        urlObj.searchParams.get('trolleyId') ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      const tokenParam = (
+        urlObj.searchParams.get('token') ||
+        urlObj.searchParams.get('sessionToken') ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      const invoiceParam = (
+        urlObj.searchParams.get('invoice') ||
+        urlObj.searchParams.get('invoiceNumber') ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+
+      if (CUSTOMER_ID_RE.test(customerParam)) {
+        return {
+          customerId: customerParam,
+          trolleyId: TROLLEY_ID_RE.test(trolleyParam) ? trolleyParam : undefined,
+          sessionToken: tokenParam || undefined,
+          invoiceRef: invoiceParam || `INV-${customerParam}`,
+          lookupMode: 'checkout_qr',
+        };
+      }
+
+      if (TROLLEY_ID_RE.test(trolleyParam)) {
+        return {
+          customerId: '',
+          lookupMode: 'invalid',
+          error: `Scanned QR is a permanent Trolley entrance link (${trolleyParam}), not a Customer Checkout QR. Scan the Checkout QR on the customer phone or type ${trolleyParam} in manual lookup.`,
+        };
+      }
+    } catch {
+      // fall through to invalid
+    }
+
     return {
-      customerId: (parts[2] || '').trim().toUpperCase(),
-      trolleyId: parts[3] ? parts[3].trim().toUpperCase() : undefined,
-      sessionToken: parts[4] ? parts[4].trim().toUpperCase() : undefined,
+      customerId: '',
+      lookupMode: 'invalid',
+      error: 'Scanned QR is not a valid Trolley Titans Checkout QR code.',
     };
   }
-  return { customerId: trimmed.toUpperCase() };
+
+  // 5. Direct manual lookup IDs (CUST001 or T001)
+  const upper = trimmed.toUpperCase();
+  if (CUSTOMER_ID_RE.test(upper)) {
+    return {
+      customerId: upper,
+      invoiceRef: `INV-${upper}`,
+      lookupMode: 'customer_id',
+    };
+  }
+
+  if (TROLLEY_ID_RE.test(upper)) {
+    return {
+      customerId: '',
+      trolleyId: upper,
+      lookupMode: 'trolley_id',
+    };
+  }
+
+  return {
+    customerId: '',
+    lookupMode: 'invalid',
+    error: `Invalid Checkout QR code or ID ("${trimmed.slice(0, 40)}"). Scan a valid Checkout QR or enter Customer ID (e.g., CUST001) or Trolley Number (e.g., T001).`,
+  };
 }
 
 export function buildTrolleyQrPayload(trolleyId: string, publicOriginOverride?: string): string {
