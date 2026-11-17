@@ -253,6 +253,27 @@ service cloud.firestore {
                 getAfter(/databases/$(database)/documents/trolleys/$(existing().trolleyId)).data.status == 'AVAILABLE' &&
                 getAfter(/databases/$(database)/documents/trolleys/$(existing().trolleyId)).data.activeSessionId == null &&
                 incoming().diff(existing()).affectedKeys().hasOnly(['status', 'closedAt', 'updatedAt'])
+              ) ||
+              (
+                existing().status == 'ACTIVE' &&
+                existing().paymentStatus == 'UNPAID' &&
+                existing().itemCount == 0 &&
+                existing().grandTotal == 0 &&
+                incoming().status == 'CLOSED' &&
+                incoming().paymentStatus == 'UNPAID' &&
+                incoming().physicalVerified == false &&
+                incoming().itemCount == 0 &&
+                incoming().grandTotal == 0 &&
+                incoming().closedAt == request.time &&
+                incoming().verifiedByUid == request.auth.uid &&
+                incoming().verifiedByLabel is string &&
+                incoming().verifiedByLabel.size() >= 1 &&
+                incoming().verifiedByLabel.size() <= 80 &&
+                getAfter(/databases/$(database)/documents/trolleys/$(existing().trolleyId)).data.status == 'AVAILABLE' &&
+                getAfter(/databases/$(database)/documents/trolleys/$(existing().trolleyId)).data.activeSessionId == null &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'status', 'closedAt', 'verifiedByUid', 'verifiedByLabel', 'updatedAt'
+                ])
               )
             )
           )

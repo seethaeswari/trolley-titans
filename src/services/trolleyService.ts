@@ -390,6 +390,82 @@ export async function staffCloseSession(sessionId: string, trolleyId: string): P
   }
 }
 
+export async function staffCloseEmptySession(
+  sessionId: string,
+  trolleyId: string,
+  staffUser: User
+): Promise<void> {
+  const sessionRef = doc(db, 'sessions', sessionId);
+  const trolleyRef = doc(db, 'trolleys', trolleyId);
+  const itemsColRef = query(
+    collection(db, 'sessions', sessionId, 'items'),
+    where('sessionId', '==', sessionId)
+  );
+
+  try {
+    const itemsSnap = await getDocs(itemsColRef);
+    if (!itemsSnap.empty) {
+      throw new Error(
+        `Session ${sessionId} contains scanned items. Use physical product verification and mark demo payment PAID before closing.`
+      );
+    }
+
+    await runTransaction(db, async (tx) => {
+      const sessionSnap = await tx.get(sessionRef);
+      if (!sessionSnap.exists()) {
+        throw new Error(`Session ${sessionId} not found.`);
+      }
+      const session = sessionSnap.data() as ShoppingSession;
+      if (session.trolleyId !== trolleyId) {
+        throw new Error(
+          `Trolley mismatch: Session ${sessionId} belongs to ${session.trolleyId}, not ${trolleyId}.`
+        );
+      }
+      if (session.status !== 'ACTIVE' || session.paymentStatus !== 'UNPAID') {
+        throw new Error(
+          `Session ${sessionId} is ${session.status} (${session.paymentStatus}) and cannot be closed as an empty active session.`
+        );
+      }
+      if (session.itemCount !== 0 || session.grandTotal !== 0) {
+        throw new Error(
+          `Session ${sessionId} is not empty (${session.itemCount} items). Physical verification and PAID confirmation are required.`
+        );
+      }
+
+      const trolleySnap = await tx.get(trolleyRef);
+      if (!trolleySnap.exists()) {
+        throw new Error(`Trolley ${trolleyId} not found.`);
+      }
+
+      tx.update(sessionRef, {
+        status: 'CLOSED',
+        closedAt: serverTimestamp(),
+        verifiedByUid: staffUser.uid,
+        verifiedByLabel: staffUser.displayName || staffUser.email || 'Counter Staff',
+        updatedAt: serverTimestamp(),
+      });
+
+      tx.update(trolleyRef, {
+        status: 'AVAILABLE',
+        activeSessionId: null,
+        activeCustomerId: null,
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
+    if (error instanceof Error && (
+      error.message.includes('contains scanned items') ||
+      error.message.includes('is not empty') ||
+      error.message.includes('cannot be closed as an empty') ||
+      error.message.includes('not found') ||
+      error.message.includes('Trolley mismatch')
+    )) {
+      throw error;
+    }
+    handleFirestoreError(error, OperationType.WRITE, `sessions/${sessionId}`);
+  }
+}
+
 export async function staffSaveProduct(product: Omit<Product, 'updatedAt'>): Promise<void> {
   const productRef = doc(db, 'products', product.productId);
   try {

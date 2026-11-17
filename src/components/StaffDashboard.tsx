@@ -27,6 +27,7 @@ import {
 import {
   checkIsStaff,
   staffAddAllowlistEmail,
+  staffCloseEmptySession,
   staffCloseSession,
   staffCreateTrolley,
   staffRemoveAllowlistEmail,
@@ -62,6 +63,7 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+  const [confirmEmptyCloseId, setConfirmEmptyCloseId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Catalog & Staff Admin state
@@ -121,6 +123,7 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
     }
 
     setCheckedProducts({});
+    setConfirmEmptyCloseId(null);
     const q = query(
       collection(db, 'sessions', selectedSessionId, 'items'),
       where('sessionId', '==', selectedSessionId)
@@ -237,6 +240,15 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
 
   const allPhysicalItemsChecked =
     selectedItems.length > 0 && selectedItems.every((item) => Boolean(checkedProducts[item.productId]));
+
+  const isEmptyActiveSession = Boolean(
+    selectedSession &&
+      selectedSession.status === 'ACTIVE' &&
+      selectedSession.paymentStatus === 'UNPAID' &&
+      selectedSession.itemCount === 0 &&
+      selectedSession.grandTotal === 0 &&
+      selectedItems.length === 0
+  );
 
   const handleGoogleSignIn = async () => {
     setAuthError(null);
@@ -368,6 +380,27 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
       setActionNotice({
         type: 'error',
         message: err instanceof Error ? err.message : 'Failed to close session.',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCloseEmptySession = async () => {
+    if (!selectedSession || !user) return;
+    setBusy(true);
+    setActionNotice(null);
+    try {
+      await staffCloseEmptySession(selectedSession.customerId, selectedSession.trolleyId, user);
+      setConfirmEmptyCloseId(null);
+      setActionNotice({
+        type: 'success',
+        message: `Empty demo session ${selectedSession.customerId} is now CLOSED (UNPAID) and preserved in Bill History. Trolley ${selectedSession.trolleyId} is AVAILABLE for the next customer.`,
+      });
+    } catch (err) {
+      setActionNotice({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to close empty demo session.',
       });
     } finally {
       setBusy(false);
@@ -884,50 +917,132 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
 
                 {/* Staff Actions */}
                 {selectedSession.status !== 'CLOSED' ? (
-                  <div className="space-y-3">
-                    <p className="text-xs text-slate-500">
-                      School Demonstration Verification: Confirm physical items in Trolley{' '}
-                      <span className="font-mono font-semibold text-slate-700">
-                        {selectedSession.trolleyId}
-                      </span>{' '}
-                      before marking demo payment as PAID (no real payment processing). Closing
-                      this session will not affect other active trolleys.
-                    </p>
-                    <div className="flex flex-col sm:flex-row gap-3">
-                      {selectedSession.paymentStatus === 'UNPAID' ? (
-                        <button
-                          type="button"
-                          onClick={() => void handleMarkPaid()}
-                          disabled={busy || !allPhysicalItemsChecked}
-                          className="flex-1 inline-flex items-center justify-center gap-2 min-h-[48px] px-5 py-3 rounded-xl bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  isEmptyActiveSession ? (
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-600">
+                        This active demonstration session currently has{' '}
+                        <span className="font-semibold text-slate-900">0 scanned products</span>.
+                        You may safely close it without marking any payment as received, release{' '}
+                        <span className="font-mono font-semibold text-slate-900">
+                          {selectedSession.trolleyId}
+                        </span>{' '}
+                        as AVAILABLE, and keep{' '}
+                        <span className="font-mono font-semibold text-slate-900">
+                          {selectedSession.customerId}
+                        </span>{' '}
+                        preserved in Bill History. Other active customer sessions remain
+                        unaffected.
+                      </p>
+
+                      {confirmEmptyCloseId === selectedSession.customerId ? (
+                        <div
+                          role="alertdialog"
+                          aria-label="Confirm closing empty demo session"
+                          className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-3"
                         >
-                          <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
-                          {allPhysicalItemsChecked
-                            ? 'Verify & Mark Demo Payment PAID'
-                            : 'Check All Physical Items First'}
-                        </button>
+                          <div className="space-y-1">
+                            <p className="text-sm font-bold text-amber-950">
+                              Confirm Close Empty Demo Session
+                            </p>
+                            <p className="text-xs text-amber-900 leading-relaxed">
+                              Close empty demo session{' '}
+                              <span className="font-mono font-bold">
+                                {selectedSession.customerId}
+                              </span>{' '}
+                              on Trolley{' '}
+                              <span className="font-mono font-bold">
+                                {selectedSession.trolleyId}
+                              </span>{' '}
+                              without marking payment as received? Status will become{' '}
+                              <span className="font-semibold">CLOSED (UNPAID)</span> in Bill
+                              History, Trolley{' '}
+                              <span className="font-mono font-semibold">
+                                {selectedSession.trolleyId}
+                              </span>{' '}
+                              will become <span className="font-semibold">AVAILABLE</span>, and
+                              other active sessions will not be affected.
+                            </p>
+                          </div>
+                          <div className="flex flex-col sm:flex-row gap-2.5">
+                            <button
+                              type="button"
+                              onClick={() => void handleCloseEmptySession()}
+                              disabled={busy}
+                              className="flex-1 inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-amber-900 text-white text-xs sm:text-sm font-semibold hover:bg-amber-950 disabled:opacity-50 transition-colors cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                              Confirm Close Empty Session
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmEmptyCloseId(null)}
+                              disabled={busy}
+                              className="min-h-[44px] px-4 py-2.5 rounded-xl bg-white border border-amber-300 text-amber-950 text-xs sm:text-sm font-semibold hover:bg-amber-100 disabled:opacity-50 transition-colors cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
                       ) : (
                         <button
                           type="button"
-                          onClick={() => void handleCloseSession()}
+                          onClick={() => setConfirmEmptyCloseId(selectedSession.customerId)}
                           disabled={busy}
-                          className="flex-1 inline-flex items-center justify-center gap-2 min-h-[48px] px-5 py-3 rounded-xl bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800 disabled:opacity-50 transition-colors cursor-pointer"
+                          className="w-full inline-flex items-center justify-center gap-2 min-h-[48px] px-5 py-3 rounded-xl bg-amber-800 text-white text-sm font-semibold hover:bg-amber-900 disabled:opacity-50 transition-colors cursor-pointer"
                         >
                           <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
-                          Close Session &amp; Release {selectedSession.trolleyId}
+                          Close Empty Demo Session
                         </button>
                       )}
                     </div>
-                  </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-500">
+                        School Demonstration Verification: Confirm physical items in Trolley{' '}
+                        <span className="font-mono font-semibold text-slate-700">
+                          {selectedSession.trolleyId}
+                        </span>{' '}
+                        before marking demo payment as PAID (no real payment processing). Closing
+                        this session will not affect other active trolleys.
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        {selectedSession.paymentStatus === 'UNPAID' ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleMarkPaid()}
+                            disabled={busy || !allPhysicalItemsChecked}
+                            className="flex-1 inline-flex items-center justify-center gap-2 min-h-[48px] px-5 py-3 rounded-xl bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                            {allPhysicalItemsChecked
+                              ? 'Verify & Mark Demo Payment PAID'
+                              : 'Check All Physical Items First'}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleCloseSession()}
+                            disabled={busy}
+                            className="flex-1 inline-flex items-center justify-center gap-2 min-h-[48px] px-5 py-3 rounded-xl bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800 disabled:opacity-50 transition-colors cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                            Close Session &amp; Release {selectedSession.trolleyId}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
                 ) : (
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 flex flex-wrap items-center justify-between gap-3">
                     <div className="text-xs text-emerald-900">
                       <p className="font-semibold">
-                        Session {selectedSession.customerId} Closed &amp; Archived
+                        {selectedSession.paymentStatus === 'UNPAID'
+                          ? `Empty Demo Session ${selectedSession.customerId} Closed (UNPAID) & Archived`
+                          : `Session ${selectedSession.customerId} Closed & Archived`}
                       </p>
                       <p className="mt-0.5">
-                        Trolley {selectedSession.trolleyId} is released. Scan the next customer&apos;s
-                        Checkout QR or enter their Customer ID on the left.
+                        Trolley {selectedSession.trolleyId} is released as AVAILABLE. Scan the next
+                        customer&apos;s Checkout QR or enter their Customer ID on the left.
                       </p>
                     </div>
                     <button
@@ -1008,8 +1123,14 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
                         <td className="py-3 px-4 font-mono font-bold text-right tabular-nums text-slate-900">
                           {formatCurrency(bill.grandTotal)}
                         </td>
-                        <td className="py-3 px-4 text-xs font-semibold text-emerald-800">
-                          PAID · CLOSED
+                        <td
+                          className={`py-3 px-4 text-xs font-semibold ${
+                            bill.paymentStatus === 'PAID' ? 'text-emerald-800' : 'text-slate-600'
+                          }`}
+                        >
+                          {bill.paymentStatus === 'PAID'
+                            ? 'PAID · CLOSED'
+                            : 'EMPTY DEMO · CLOSED (UNPAID)'}
                         </td>
                       </tr>
                     ))}
@@ -1033,25 +1154,33 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
                     {selectedSession.customerId} · {selectedSession.trolleyId}
                   </h3>
                   <p className="text-xs text-slate-500 mt-1">
-                    Closed {formatTimestamp(selectedSession.closedAt)} · Verified by{' '}
-                    {selectedSession.verifiedByLabel || 'Staff'}
+                    Closed {formatTimestamp(selectedSession.closedAt)} ·{' '}
+                    {selectedSession.paymentStatus === 'PAID'
+                      ? `Verified by ${selectedSession.verifiedByLabel || 'Staff'}`
+                      : `Empty demo closed (UNPAID) by ${selectedSession.verifiedByLabel || 'Staff'}`}
                   </p>
                 </div>
 
                 <div className="divide-y divide-slate-100">
-                  {selectedItems.map((item) => (
-                    <div key={item.productId} className="py-2.5 flex justify-between gap-3 text-sm">
-                      <div>
-                        <p className="font-medium text-slate-900">{item.name}</p>
-                        <p className="text-xs text-slate-500 tabular-nums">
-                          {item.quantity} × {formatCurrency(item.unitPrice)} · GST {item.gstRate}%
+                  {selectedItems.length === 0 ? (
+                    <p className="py-4 text-xs text-slate-500">
+                      No products were scanned in this empty demo session.
+                    </p>
+                  ) : (
+                    selectedItems.map((item) => (
+                      <div key={item.productId} className="py-2.5 flex justify-between gap-3 text-sm">
+                        <div>
+                          <p className="font-medium text-slate-900">{item.name}</p>
+                          <p className="text-xs text-slate-500 tabular-nums">
+                            {item.quantity} × {formatCurrency(item.unitPrice)} · GST {item.gstRate}%
+                          </p>
+                        </div>
+                        <p className="font-mono font-semibold text-slate-900 tabular-nums">
+                          {formatCurrency(item.lineTotal)}
                         </p>
                       </div>
-                      <p className="font-mono font-semibold text-slate-900 tabular-nums">
-                        {formatCurrency(item.lineTotal)}
-                      </p>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
 
                 <div className="pt-3 border-t border-slate-200 space-y-1.5 text-sm">
@@ -1068,7 +1197,11 @@ export function StaffDashboard({ products, trolleys }: StaffDashboardProps) {
                     </span>
                   </div>
                   <div className="flex justify-between text-base font-bold text-slate-900 pt-1">
-                    <span>Grand Total Paid</span>
+                    <span>
+                      {selectedSession.paymentStatus === 'PAID'
+                        ? 'Grand Total Paid'
+                        : 'Grand Total (Unpaid Empty Demo)'}
+                    </span>
                     <span className="font-mono tabular-nums">
                       {formatCurrency(selectedSession.grandTotal)}
                     </span>

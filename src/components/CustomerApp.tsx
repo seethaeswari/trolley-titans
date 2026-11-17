@@ -698,6 +698,7 @@ export function CustomerApp({ products, trolleys }: CustomerAppProps) {
   // STATE 2: Session PAID or CLOSED (Real-time completion receipt)
   if (session.status === 'PAID' || session.status === 'CLOSED') {
     const isClosed = session.status === 'CLOSED';
+    const isUnpaidEmptyClose = isClosed && session.paymentStatus === 'UNPAID';
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 space-y-6">
@@ -707,17 +708,25 @@ export function CustomerApp({ products, trolleys }: CustomerAppProps) {
             </div>
             <div>
               <p className="text-xs font-semibold text-emerald-800 uppercase tracking-wide">
-                {isClosed ? 'Shopping Session Closed' : 'Demo Payment Verified at Counter'}
+                {isUnpaidEmptyClose
+                  ? 'Empty Demo Session Closed'
+                  : isClosed
+                    ? 'Shopping Session Closed'
+                    : 'Demo Payment Verified at Counter'}
               </p>
               <h1 className="text-2xl font-bold text-slate-900 mt-1">
-                {isClosed
-                  ? `Thank you for shopping, ${session.customerId}`
-                  : `Demo Payment Confirmed for ${session.customerId}`}
+                {isUnpaidEmptyClose
+                  ? `Session ${session.customerId} Closed (No Items)`
+                  : isClosed
+                    ? `Thank you for shopping, ${session.customerId}`
+                    : `Demo Payment Confirmed for ${session.customerId}`}
               </h1>
               <p className="text-sm text-slate-600 mt-1">
-                {isClosed
-                  ? `Trolley ${session.trolleyId} has been released and is ready for the next customer. Your demonstration receipt is archived.`
-                  : `Counter staff (${session.verifiedByLabel || 'Staff'}) verified your physical trolley items and marked the demonstration payment as PAID. Counter staff is closing the session now.`}
+                {isUnpaidEmptyClose
+                  ? `Counter staff closed this empty session with zero items and no payment recorded. Trolley ${session.trolleyId} has been released as AVAILABLE and the empty record is preserved in Bill History.`
+                  : isClosed
+                    ? `Trolley ${session.trolleyId} has been released and is ready for the next customer. Your demonstration receipt is archived.`
+                    : `Counter staff (${session.verifiedByLabel || 'Staff'}) verified your physical trolley items and marked the demonstration payment as PAID. Counter staff is closing the session now.`}
               </p>
             </div>
           </div>
@@ -733,7 +742,13 @@ export function CustomerApp({ products, trolleys }: CustomerAppProps) {
             </div>
             <div>
               <p className="text-xs text-slate-500">Payment</p>
-              <p className="font-semibold text-emerald-700 mt-0.5">{session.paymentStatus}</p>
+              <p
+                className={`font-semibold mt-0.5 ${
+                  session.paymentStatus === 'PAID' ? 'text-emerald-700' : 'text-slate-700'
+                }`}
+              >
+                {session.paymentStatus}
+              </p>
             </div>
             <div>
               <p className="text-xs text-slate-500">Session Status</p>
@@ -743,25 +758,31 @@ export function CustomerApp({ products, trolleys }: CustomerAppProps) {
 
           <div>
             <h2 className="text-sm font-semibold text-slate-900 mb-3">Itemized Tax Receipt</h2>
-            <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
-              {cartItems.map((item) => (
-                <div
-                  key={item.productId}
-                  className="px-4 py-3 flex items-center justify-between gap-4 text-sm bg-white"
-                >
-                  <div className="min-w-0">
-                    <p className="font-medium text-slate-900 truncate">{item.name}</p>
-                    <p className="text-xs text-slate-500 tabular-nums">
-                      {item.quantity} × {formatCurrency(item.unitPrice)} · GST {item.gstRate}% (
-                      {formatCurrency(item.lineGst)})
+            {cartItems.length === 0 ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                No products were scanned in this session.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+                {cartItems.map((item) => (
+                  <div
+                    key={item.productId}
+                    className="px-4 py-3 flex items-center justify-between gap-4 text-sm bg-white"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-900 truncate">{item.name}</p>
+                      <p className="text-xs text-slate-500 tabular-nums">
+                        {item.quantity} × {formatCurrency(item.unitPrice)} · GST {item.gstRate}% (
+                        {formatCurrency(item.lineGst)})
+                      </p>
+                    </div>
+                    <p className="font-mono font-semibold text-slate-900 tabular-nums shrink-0">
+                      {formatCurrency(item.lineTotal)}
                     </p>
                   </div>
-                  <p className="font-mono font-semibold text-slate-900 tabular-nums shrink-0">
-                    {formatCurrency(item.lineTotal)}
-                  </p>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="space-y-2 pt-2 text-sm">
@@ -774,7 +795,11 @@ export function CustomerApp({ products, trolleys }: CustomerAppProps) {
               <span className="font-mono tabular-nums">{formatCurrency(session.gstTotal)}</span>
             </div>
             <div className="flex justify-between text-base font-bold text-slate-900 pt-2 border-t border-slate-200">
-              <span>Grand Total (Demo Paid)</span>
+              <span>
+                {isUnpaidEmptyClose
+                  ? 'Grand Total (Unpaid Demo Session)'
+                  : 'Grand Total (Demo Paid)'}
+              </span>
               <span className="font-mono tabular-nums">{formatCurrency(session.grandTotal)}</span>
             </div>
             {session.closedAt && (
